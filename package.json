@@ -1,0 +1,25 @@
+{
+  "name": "divoxutils-discord-bot",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "discord bot for divoxutils",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/camziny/divoxutils-discord-bot.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/camziny/divoxutils-discord-bot/issues"
+  },
+  "homepage": "https://github.com/camziny/divoxutils-discord-bot#readme",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5"
+  }
+}

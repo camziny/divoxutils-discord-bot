@@ -32,6 +32,7 @@ module.exports = {
 
     try {
       const response = await axios.get(url);
+      console.log(response.status);
       const data = response.data;
 
       if (data.results.length > 0) {
@@ -52,7 +53,11 @@ module.exports = {
         await interaction.reply("Character not found.");
       }
     } catch (error) {
-      console.error(error);
+      console.error("Axios error:", error.message);
+      if (error.response) {
+        console.error("Response data:", error.response.data);
+        console.error("Response status:", error.response.status);
+      }
       await interaction.reply(
         "An error occurred while fetching character information."
       );

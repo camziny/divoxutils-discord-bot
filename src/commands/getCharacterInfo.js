@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const fetch = require("node-fetch");
+const axios = require("axios");
 const {
   formatRealmRankWithLevel,
   getRealmRankForPoints,
@@ -32,7 +32,7 @@ module.exports = {
     const url = `https://api.camelotherald.com/character/search?name=${name}&cluster=ywain`;
 
     try {
-      const response = await fetch(url);
+      const response = await axios.get(url);
       const data = await response.json();
 
       if (data.results.length > 0) {

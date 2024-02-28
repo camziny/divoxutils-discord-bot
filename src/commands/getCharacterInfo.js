@@ -29,9 +29,10 @@ module.exports = {
   async execute(interaction) {
     const name = interaction.options.getString("name");
     const url = `https://api.camelotherald.com/character/search?name=${name}&cluster=ywain`;
-
+    console.log("URL:", url);
     try {
       const response = await axios.get(url);
+      console.log("Response data:", response.data);
       console.log(response.status);
       const data = response.data;
 

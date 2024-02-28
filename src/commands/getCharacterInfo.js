@@ -17,7 +17,10 @@ const {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("info")
-    .setDescription("Get information about a character")
+    .setDescription(
+      "Get basic character info. Name must match exactly as in-game."
+    )
+
     .addStringOption((option) =>
       option
         .setName("name")

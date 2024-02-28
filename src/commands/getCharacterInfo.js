@@ -20,7 +20,6 @@ module.exports = {
     .setDescription(
       "Get basic character info. Name must match exactly as in-game."
     )
-
     .addStringOption((option) =>
       option
         .setName("name")
@@ -33,13 +32,12 @@ module.exports = {
 
     try {
       const response = await axios.get(url);
-      const data = await response.json();
+      const data = response.data;
 
       if (data.results.length > 0) {
         const character = data.results[0];
         const realmRank = getRealmRankForPoints(character.realm_points);
         const formattedRealmRank = formatRealmRankWithLevel(realmRank);
-        const reply = `Name: ${character.name}\nClass: ${character.class_name}\nRealm Rank: ${formattedRealmRank}\nServer: ${character.server_name}`;
         const embed = new EmbedBuilder()
           .setColor("#6366f1")
           .addFields(

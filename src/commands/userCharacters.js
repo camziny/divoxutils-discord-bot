@@ -11,7 +11,7 @@ const {
 } = require("discord.js");
 
 const data = new SlashCommandBuilder()
-  .setName("getcharacters")
+  .setName("user-characters")
   .setDescription("Get characters for a user")
   .addStringOption((option) =>
     option

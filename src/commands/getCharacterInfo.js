@@ -32,8 +32,6 @@ module.exports = {
     console.log("URL:", url);
     try {
       const response = await axios.get(url);
-      console.log("Response data:", response.data);
-      console.log(response.status);
       const data = response.data;
 
       if (data.results.length > 0) {
@@ -51,7 +49,7 @@ module.exports = {
 
         await interaction.reply({ embeds: [embed] });
       } else {
-        await interaction.reply("Character not found.");
+        await interaction.reply(`Character ${name} not found.`);
       }
     } catch (error) {
       console.error("Axios error:", error.message);

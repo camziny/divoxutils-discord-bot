@@ -44,7 +44,7 @@ async function execute(interaction) {
   } catch (error) {
     console.error(error);
     await interaction.reply({
-      content: "Error: Please check your inputs and try again.",
+      content: `User ${name} not found`,
       ephemeral: true,
     });
   }

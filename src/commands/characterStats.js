@@ -32,7 +32,8 @@ async function execute(interaction) {
           `${bold(stats.formattedRank || "N/A")}\n\n` +
           `${bold("Total Stats:")}\n` +
           `Solo Kills: ${stats.totalSoloKills?.toLocaleString() || "N/A"}\n` +
-          `Deaths: ${stats.totalDeaths?.toLocaleString() || "N/A"}\n\n` +
+          `Deaths: ${stats.totalDeaths?.toLocaleString() || "N/A"}\n` +
+          `IRS: ${stats.irs?.toLocaleString() || "N/A"}\n\n` +
           `${bold("Last Week Stats:")}\n` +
           `Solo Kills: ${
             stats.soloKillsLastWeek?.toLocaleString() || "N/A"
@@ -40,7 +41,8 @@ async function execute(interaction) {
           `Deaths: ${stats.deathsLastWeek?.toLocaleString() || "N/A"}\n` +
           `Realm Points: ${
             stats.realmPointsLastWeek?.toLocaleString() || "N/A"
-          }`
+          }\n` +
+          `IRS: ${stats.irsLastWeek?.toLocaleString() || "N/A"}`
       );
 
     await interaction.reply({ embeds: [embed] });

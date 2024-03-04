@@ -51,7 +51,14 @@ async function execute(interaction) {
   const classType = toSingularClassType(
     interaction.options.getString("classtype")
   );
-  const apiUrl = `${process.env.API_URL}/users/characters/${name}?realm=${realm}&classType=${classType}`;
+  let queryParams = [];
+  if (realm) queryParams.push(`realm=${realm}`);
+  if (classType) queryParams.push(`classType=${classType}`);
+  const queryString = queryParams.join("&");
+
+  const apiUrl = `${process.env.API_URL}/users/characters/${name}${
+    queryString ? `?${queryString}` : ""
+  }`;
 
   try {
     const response = await axios.get(apiUrl, {
@@ -66,7 +73,9 @@ async function execute(interaction) {
         {
           name: "Results for:",
           value: bold(
-            `${data.user} ${realm} ${classType.charAt(0) + classType.slice(1)}`
+            `${data.user} ${realm || ""} ${
+              classType.charAt(0).toUpperCase() + classType.slice(1)
+            }`
           ),
         },
         ...data.characters.map((char) => ({
@@ -78,7 +87,9 @@ async function execute(interaction) {
       await interaction.reply({ embeds: [embed] });
     } else {
       await interaction.reply(
-        `No characters found for ${name} in realm ${realm} with class type ${classType}.`
+        `No characters found for ${name} in realm ${
+          realm || "any"
+        } with class type ${classType || "any"}.`
       );
     }
   } catch (error) {

@@ -5,11 +5,6 @@ const dotenv = require("dotenv");
 const { REST } = require("@discordjs/rest");
 const { Routes } = require("discord-api-types/v10");
 dotenv.config();
-console.log(
-  `DISCORD_TOKEN: ${process.env.DISCORD_TOKEN ? "loaded" : "missing"}`
-);
-console.log(`API_URL: ${process.env.API_URL}`);
-console.log(`API_KEY: ${process.env.API_KEY}`);
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],

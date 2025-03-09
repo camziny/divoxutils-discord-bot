@@ -29,14 +29,16 @@ client.once("ready", async () => {
 
   try {
     console.log("Started refreshing application (/) commands.");
+    
+    console.log("Commands to register:", Array.from(commands.keys()));
 
     await rest.put(Routes.applicationCommands(client.user.id), {
-      body: commands.map((command) => command.data.toJSON()),
+      body: Array.from(commands.values()).map((command) => command.data.toJSON()),
     });
 
     console.log("Successfully reloaded application (/) commands.");
   } catch (error) {
-    console.error(error);
+    console.error("Error registering commands:", error);
   }
 });
 

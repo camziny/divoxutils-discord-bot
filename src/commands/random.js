@@ -16,7 +16,7 @@ async function execute(interaction) {
   
   const randomNumber = Math.floor(Math.random() * max) + 1;
   
-  await interaction.reply(`🎲 Your random number is: **${randomNumber}**`);
+  await interaction.reply(`You picked a random number between 1 and ${max}: **${randomNumber}**`);
 }
 
 module.exports = { data, execute }; 

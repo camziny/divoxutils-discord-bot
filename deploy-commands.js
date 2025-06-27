@@ -10,7 +10,7 @@ const clientId = process.env.DISCORD_CLIENT_ID;
 const token = process.env.DISCORD_TOKEN;
 
 const commands = [];
-const commandsPath = path.join(__dirname, "commands");
+const commandsPath = path.join(__dirname, "src/commands");
 const commandFiles = fs
   .readdirSync(commandsPath)
   .filter((file) => file.endsWith(".js"));

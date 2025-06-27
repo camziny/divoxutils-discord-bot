@@ -13,10 +13,11 @@ const data = new SlashCommandBuilder()
 
 async function execute(interaction) {
   const max = interaction.options.getInteger("max");
+  const userName = interaction.member?.displayName || interaction.user.username;
   
   const randomNumber = Math.floor(Math.random() * max) + 1;
   
-  await interaction.reply(`You picked a random number between 1 and ${max}: **${randomNumber}**`);
+  await interaction.reply(`${userName} picked a random number between 1 and ${max}: **${randomNumber}**`);
 }
 
 module.exports = { data, execute }; 

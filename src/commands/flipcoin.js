@@ -5,6 +5,7 @@ const data = new SlashCommandBuilder()
   .setDescription("Flip a coin to get heads or tails");
 
 async function execute(interaction) {
+  console.log("Flipcoin command executed!");
   const result = Math.random() < 0.5 ? "heads" : "tails";
   
   await interaction.reply(`The coin landed on: **${result}**`);

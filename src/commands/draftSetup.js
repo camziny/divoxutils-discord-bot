@@ -41,6 +41,23 @@ async function execute(interaction) {
   const team1Channel = interaction.options.getChannel("team1-channel");
   const team2Channel = interaction.options.getChannel("team2-channel");
 
+  if (!lobbyChannel || !team1Channel || !team2Channel) {
+    await interaction.editReply({
+      content: "All three channels are required and must be voice channels.",
+    });
+    return;
+  }
+
+  const allVoice = [lobbyChannel, team1Channel, team2Channel].every(
+    (ch) => ch.type === ChannelType.GuildVoice
+  );
+  if (!allVoice) {
+    await interaction.editReply({
+      content: "All three channels must be voice channels, not text channels.",
+    });
+    return;
+  }
+
   const channelIds = [lobbyChannel.id, team1Channel.id, team2Channel.id];
   const unique = new Set(channelIds);
   if (unique.size !== channelIds.length) {

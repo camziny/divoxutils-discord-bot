@@ -10,18 +10,25 @@ const CONVEX_URL = process.env.CONVEX_URL;
 
 const data = new SlashCommandBuilder()
   .setName("draft-setup")
-  .setDescription("Configure voice channels for post-draft team moves")
+  .setDescription("Configure voice channels for the draft bot")
+  .addChannelOption((option) =>
+    option
+      .setName("lobby-channel")
+      .setDescription("Voice channel to pull players from for drafts")
+      .addChannelTypes(ChannelType.GuildVoice)
+      .setRequired(false)
+  )
   .addChannelOption((option) =>
     option
       .setName("team1-channel")
-      .setDescription("Voice channel for Team 1")
+      .setDescription("Voice channel to move Team 1 into after draft")
       .addChannelTypes(ChannelType.GuildVoice)
       .setRequired(true)
   )
   .addChannelOption((option) =>
     option
       .setName("team2-channel")
-      .setDescription("Voice channel for Team 2")
+      .setDescription("Voice channel to move Team 2 into after draft")
       .addChannelTypes(ChannelType.GuildVoice)
       .setRequired(true)
   )
@@ -30,6 +37,7 @@ const data = new SlashCommandBuilder()
 async function execute(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
+  const lobbyChannel = interaction.options.getChannel("lobby-channel");
   const team1Channel = interaction.options.getChannel("team1-channel");
   const team2Channel = interaction.options.getChannel("team2-channel");
 
@@ -45,18 +53,26 @@ async function execute(interaction) {
       guildId: interaction.guildId,
       team1ChannelId: team1Channel.id,
       team2ChannelId: team2Channel.id,
+      lobbyChannelId: lobbyChannel?.id || null,
     });
+
+    const lobbyLine = lobbyChannel
+      ? `**Lobby** → <#${lobbyChannel.id}>\n`
+      : "";
 
     const embed = new EmbedBuilder()
       .setColor("#6366f1")
       .setTitle("Draft Channels Configured")
       .setDescription(
-        `After a draft is completed, players will be moved to:\n\n` +
+        `${lobbyLine}` +
           `**Team 1** → <#${team1Channel.id}>\n` +
-          `**Team 2** → <#${team2Channel.id}>`
+          `**Team 2** → <#${team2Channel.id}>\n\n` +
+          (lobbyChannel
+            ? `Players will be pulled from the lobby channel when \`/draft\` is run.`
+            : `No lobby set — \`/draft\` will pull from the creator's current voice channel.`)
       )
       .setFooter({
-        text: "Run this command again to update the channels.",
+        text: "Run this command again to update.",
       });
 
     await interaction.editReply({ embeds: [embed] });

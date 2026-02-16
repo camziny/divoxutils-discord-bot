@@ -18,11 +18,47 @@ async function execute(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
   const member = interaction.member;
-  const voiceChannel = member?.voice?.channel;
+
+  // Check if guild has configured draft settings
+  let guildSettings = null;
+  try {
+    const settingsRes = await axios.get(
+      `${CONVEX_URL}/guildSettings?guildId=${interaction.guildId}`
+    );
+    guildSettings = settingsRes.data;
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      await interaction.editReply({
+        content:
+          "Draft has not been set up on this server yet. An admin needs to run `/draft-setup` first to configure team channels.",
+      });
+      return;
+    }
+  }
+
+  const lobbyChannelId = guildSettings?.lobbyChannelId || null;
+
+  let voiceChannel;
+
+  if (lobbyChannelId) {
+    try {
+      voiceChannel = await interaction.client.channels.fetch(lobbyChannelId);
+    } catch {
+      await interaction.editReply({
+        content:
+          "The configured lobby channel could not be found. Run `/draft-setup` to update it.",
+      });
+      return;
+    }
+  } else {
+    voiceChannel = member?.voice?.channel;
+  }
 
   if (!voiceChannel || voiceChannel.type !== ChannelType.GuildVoice) {
     await interaction.editReply({
-      content: "You must be in a voice channel to start a draft.",
+      content: lobbyChannelId
+        ? "The configured lobby channel is not a voice channel. Run `/draft-setup` to fix it."
+        : "You must be in a voice channel to start a draft (or set a lobby channel with `/draft-setup`).",
     });
     return;
   }
@@ -31,8 +67,7 @@ async function execute(interaction) {
 
   if (members.size < 4) {
     await interaction.editReply({
-      content:
-        "Need at least 4 players in the voice channel to start a draft (minimum 2v2).",
+      content: `Need at least 4 players in <#${voiceChannel.id}> to start a draft (minimum 2v2).`,
     });
     return;
   }

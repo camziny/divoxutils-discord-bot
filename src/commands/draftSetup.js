@@ -13,6 +13,13 @@ const data = new SlashCommandBuilder()
   .setDescription("Configure voice channels for the draft bot")
   .addChannelOption((option) =>
     option
+      .setName("lobby-channel")
+      .setDescription("Voice channel to pull players from when /draft is run")
+      .addChannelTypes(ChannelType.GuildVoice)
+      .setRequired(true)
+  )
+  .addChannelOption((option) =>
+    option
       .setName("team1-channel")
       .setDescription("Voice channel to move Team 1 into after draft")
       .addChannelTypes(ChannelType.GuildVoice)
@@ -25,13 +32,6 @@ const data = new SlashCommandBuilder()
       .addChannelTypes(ChannelType.GuildVoice)
       .setRequired(true)
   )
-  .addChannelOption((option) =>
-    option
-      .setName("lobby-channel")
-      .setDescription("Voice channel to pull players from (optional, defaults to creator's channel)")
-      .addChannelTypes(ChannelType.GuildVoice)
-      .setRequired(false)
-  )
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
 
 async function execute(interaction) {
@@ -41,9 +41,11 @@ async function execute(interaction) {
   const team1Channel = interaction.options.getChannel("team1-channel");
   const team2Channel = interaction.options.getChannel("team2-channel");
 
-  if (team1Channel.id === team2Channel.id) {
+  const channelIds = [lobbyChannel.id, team1Channel.id, team2Channel.id];
+  const unique = new Set(channelIds);
+  if (unique.size !== channelIds.length) {
     await interaction.editReply({
-      content: "Team 1 and Team 2 channels must be different.",
+      content: "All three channels must be different.",
     });
     return;
   }
@@ -53,26 +55,20 @@ async function execute(interaction) {
       guildId: interaction.guildId,
       team1ChannelId: team1Channel.id,
       team2ChannelId: team2Channel.id,
-      lobbyChannelId: lobbyChannel?.id || null,
+      lobbyChannelId: lobbyChannel.id,
     });
-
-    const lobbyLine = lobbyChannel
-      ? `**Lobby** → <#${lobbyChannel.id}>\n`
-      : "";
 
     const embed = new EmbedBuilder()
       .setColor("#6366f1")
       .setTitle("Draft Channels Configured")
       .setDescription(
-        `${lobbyLine}` +
+        `**Lobby** → <#${lobbyChannel.id}>\n` +
           `**Team 1** → <#${team1Channel.id}>\n` +
           `**Team 2** → <#${team2Channel.id}>\n\n` +
-          (lobbyChannel
-            ? `Players will be pulled from the lobby channel when \`/draft\` is run.`
-            : `No lobby set — \`/draft\` will pull from the creator's current voice channel.`)
+          `When \`/draft\` is run, players will be pulled from the lobby channel.`
       )
       .setFooter({
-        text: "Run this command again to update.",
+        text: "Run this command again to reconfigure.",
       });
 
     await interaction.editReply({ embeds: [embed] });

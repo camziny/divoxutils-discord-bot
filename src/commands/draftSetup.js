@@ -13,13 +13,6 @@ const data = new SlashCommandBuilder()
   .setDescription("Configure voice channels for the draft bot")
   .addChannelOption((option) =>
     option
-      .setName("lobby-channel")
-      .setDescription("Voice channel to pull players from for drafts")
-      .addChannelTypes(ChannelType.GuildVoice)
-      .setRequired(false)
-  )
-  .addChannelOption((option) =>
-    option
       .setName("team1-channel")
       .setDescription("Voice channel to move Team 1 into after draft")
       .addChannelTypes(ChannelType.GuildVoice)
@@ -31,6 +24,13 @@ const data = new SlashCommandBuilder()
       .setDescription("Voice channel to move Team 2 into after draft")
       .addChannelTypes(ChannelType.GuildVoice)
       .setRequired(true)
+  )
+  .addChannelOption((option) =>
+    option
+      .setName("lobby-channel")
+      .setDescription("Voice channel to pull players from (optional, defaults to creator's channel)")
+      .addChannelTypes(ChannelType.GuildVoice)
+      .setRequired(false)
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
 

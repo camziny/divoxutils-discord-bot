@@ -1,11 +1,12 @@
+const dotenv = require("dotenv");
+dotenv.config();
+
 const { Client, Collection, GatewayIntentBits } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
-const dotenv = require("dotenv");
 const { REST } = require("@discordjs/rest");
 const { Routes } = require("discord-api-types/v10");
 const { rehydrate } = require("./utils/draftWatcher");
-dotenv.config();
 
 const client = new Client({
   intents: [

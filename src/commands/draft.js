@@ -19,7 +19,6 @@ async function execute(interaction) {
 
   const member = interaction.member;
 
-  // Check if guild has configured draft settings
   let guildSettings = null;
   try {
     const settingsRes = await axios.get(

@@ -9,6 +9,7 @@ const { watchDraft } = require("../utils/draftWatcher");
 
 const CONVEX_URL = process.env.CONVEX_URL;
 const APP_URL = process.env.APP_URL || "https://divoxutils.com";
+const BOT_HEADERS = { headers: { "x-bot-api-key": process.env.BOT_API_KEY } };
 
 const data = new SlashCommandBuilder()
   .setName("draft")
@@ -22,7 +23,8 @@ async function execute(interaction) {
   let guildSettings = null;
   try {
     const settingsRes = await axios.get(
-      `${CONVEX_URL}/guildSettings?guildId=${interaction.guildId}`
+      `${CONVEX_URL}/guildSettings?guildId=${interaction.guildId}`,
+      BOT_HEADERS
     );
     guildSettings = settingsRes.data;
   } catch (err) {
@@ -84,7 +86,7 @@ async function execute(interaction) {
       textChannelId: interaction.channelId,
       createdBy: interaction.user.id,
       players,
-    });
+    }, BOT_HEADERS);
 
     const { shortId, playerTokens } = response.data;
     const draftUrl = `${APP_URL}/draft/${shortId}`;

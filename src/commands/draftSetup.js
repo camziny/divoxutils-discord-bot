@@ -7,6 +7,7 @@ const {
 const axios = require("axios");
 
 const CONVEX_URL = process.env.CONVEX_URL;
+const BOT_HEADERS = { headers: { "x-bot-api-key": process.env.BOT_API_KEY } };
 
 const data = new SlashCommandBuilder()
   .setName("draft-setup")
@@ -73,7 +74,7 @@ async function execute(interaction) {
       team1ChannelId: team1Channel.id,
       team2ChannelId: team2Channel.id,
       lobbyChannelId: lobbyChannel.id,
-    });
+    }, BOT_HEADERS);
 
     const embed = new EmbedBuilder()
       .setColor("#6366f1")

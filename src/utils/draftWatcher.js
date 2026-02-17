@@ -3,6 +3,7 @@ const axios = require("axios");
 
 const CONVEX_URL = process.env.CONVEX_URL;
 const APP_URL = process.env.APP_URL || "https://divoxutils.com";
+const BOT_HEADERS = { headers: { "x-bot-api-key": process.env.BOT_API_KEY } };
 const activePolls = new Set();
 
 function watchDraft(client, shortId) {
@@ -12,12 +13,13 @@ function watchDraft(client, shortId) {
   const interval = setInterval(async () => {
     try {
       const { data } = await axios.get(
-        `${CONVEX_URL}/getDraftStatus?shortId=${shortId}`
+        `${CONVEX_URL}/getDraftStatus?shortId=${shortId}`,
+        BOT_HEADERS
       );
 
       if (data.status !== "setup" && !data.botPostedLink && data.discordTextChannelId) {
         await postPublicLink(client, shortId, data.discordTextChannelId);
-        await axios.post(`${CONVEX_URL}/markBotPostedLink`, { shortId });
+        await axios.post(`${CONVEX_URL}/markBotPostedLink`, { shortId }, BOT_HEADERS);
       }
 
       if (
@@ -26,8 +28,12 @@ function watchDraft(client, shortId) {
         data.team1CaptainId &&
         data.team2CaptainId
       ) {
-        await dmCaptains(client, shortId, data);
-        await axios.post(`${CONVEX_URL}/markBotNotifiedCaptains`, { shortId });
+        const { data: tokens } = await axios.get(
+          `${CONVEX_URL}/getDraftTokens?shortId=${shortId}`,
+          BOT_HEADERS
+        );
+        await dmCaptains(client, shortId, data, tokens);
+        await axios.post(`${CONVEX_URL}/markBotNotifiedCaptains`, { shortId }, BOT_HEADERS);
       }
 
       if (data.gameStarted && data.status === "complete") {
@@ -43,7 +49,7 @@ function watchDraft(client, shortId) {
 
 async function rehydrate(client) {
   try {
-    const { data: drafts } = await axios.get(`${CONVEX_URL}/activeDrafts`);
+    const { data: drafts } = await axios.get(`${CONVEX_URL}/activeDrafts`, BOT_HEADERS);
     for (const draft of drafts) {
       console.log(`Re-hydrating watcher for draft ${draft.shortId} (status: ${draft.status})`);
       watchDraft(client, draft.shortId);
@@ -72,12 +78,12 @@ async function postPublicLink(client, shortId, textChannelId) {
   }
 }
 
-async function dmCaptains(client, shortId, draftData) {
+async function dmCaptains(client, shortId, draftData, tokens) {
   const draftUrl = `${APP_URL}/draft/${shortId}`;
   const captainIds = [draftData.team1CaptainId, draftData.team2CaptainId].filter(Boolean);
 
   for (const captainId of captainIds) {
-    const tokenEntry = (draftData.tokens || []).find(
+    const tokenEntry = (tokens || []).find(
       (t) => t.discordUserId === captainId
     );
     if (!tokenEntry) continue;
@@ -106,7 +112,8 @@ async function dmCaptains(client, shortId, draftData) {
 async function movePlayersToChannels(client, draftData, guildId) {
   try {
     const { data: settings } = await axios.get(
-      `${CONVEX_URL}/guildSettings?guildId=${guildId}`
+      `${CONVEX_URL}/guildSettings?guildId=${guildId}`,
+      BOT_HEADERS
     );
 
     if (!settings || !settings.team1ChannelId || !settings.team2ChannelId) {

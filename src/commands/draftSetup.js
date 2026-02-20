@@ -2,7 +2,6 @@ const {
   SlashCommandBuilder,
   EmbedBuilder,
   ChannelType,
-  PermissionFlagsBits,
 } = require("discord.js");
 const axios = require("axios");
 
@@ -32,8 +31,7 @@ const data = new SlashCommandBuilder()
       .setDescription("Voice channel to move Team 2 into after draft")
       .addChannelTypes(ChannelType.GuildVoice)
       .setRequired(true)
-  )
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
+  );
 
 async function execute(interaction) {
   await interaction.deferReply({ ephemeral: true });

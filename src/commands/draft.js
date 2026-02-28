@@ -10,6 +10,75 @@ const { watchDraft } = require("../utils/draftWatcher");
 const CONVEX_URL = process.env.CONVEX_URL;
 const APP_URL = process.env.APP_URL || "https://divoxutils.com";
 const BOT_HEADERS = { headers: { "x-bot-api-key": process.env.BOT_API_KEY } };
+const DRAFT_HANDLER = "draft.execute";
+
+function toNonEmptyString(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : "";
+}
+
+async function resolveGuildName(interaction, handlerName = DRAFT_HANDLER) {
+  const guildId = interaction.guildId || "";
+  const interactionId = interaction.id || null;
+
+  const guildNameFromInteraction = toNonEmptyString(interaction.guild?.name);
+  if (guildNameFromInteraction) return guildNameFromInteraction;
+
+  const guildNameFromCache = toNonEmptyString(
+    interaction.client?.guilds?.cache?.get?.(guildId)?.name
+  );
+  if (guildNameFromCache) return guildNameFromCache;
+
+  if (guildId && interaction.client?.guilds?.fetch) {
+    try {
+      const fetchedGuild = await interaction.client.guilds.fetch(guildId);
+      const guildNameFromFetch = toNonEmptyString(fetchedGuild?.name);
+      if (guildNameFromFetch) return guildNameFromFetch;
+    } catch {
+    }
+  }
+
+  console.warn("[draft.execute] Unable to resolve guildName", {
+    guildId,
+    handlerName,
+    interactionId,
+  });
+  return "";
+}
+
+function resolveCreatedByDisplayName(interaction, handlerName = DRAFT_HANDLER) {
+  const interactionId = interaction.id || null;
+  const guildId = interaction.guildId || "";
+  const userId = interaction.user?.id || "";
+  const memberDisplayName = toNonEmptyString(
+    interaction.member?.displayName ||
+      interaction.member?.nickname ||
+      interaction.member?.nick
+  );
+  if (memberDisplayName) return memberDisplayName;
+
+  const globalName = toNonEmptyString(
+    interaction.user?.globalName || interaction.user?.displayName
+  );
+  if (globalName) return globalName;
+
+  const username = toNonEmptyString(interaction.user?.username);
+  if (username) return username;
+
+  const fallbackUserId = toNonEmptyString(userId);
+  if (fallbackUserId) {
+    console.warn("[draft.execute] Using userId fallback for createdByDisplayName", {
+      userId,
+      guildId,
+      handlerName,
+      interactionId,
+    });
+    return fallbackUserId;
+  }
+
+  return "";
+}
 
 const data = new SlashCommandBuilder()
   .setName("draft")
@@ -80,13 +149,49 @@ async function execute(interaction) {
   }));
 
   try {
+    const guildName = await resolveGuildName(interaction);
+    const createdByDisplayName = resolveCreatedByDisplayName(interaction);
+
+    if (!guildName) {
+      console.warn("[draft.execute] Missing guildName in createDraft preflight", {
+        guildId: interaction.guildId || "",
+        handlerName: DRAFT_HANDLER,
+        interactionId: interaction.id || null,
+      });
+    }
+
+    if (!createdByDisplayName) {
+      console.warn(
+        "[draft.execute] Missing createdByDisplayName in createDraft preflight",
+        {
+          userId: interaction.user?.id || "",
+          guildId: interaction.guildId || "",
+          handlerName: DRAFT_HANDLER,
+          interactionId: interaction.id || null,
+        }
+      );
+    }
+
+    console.log("[draft.execute] Sending createDraft request", {
+      guildId: interaction.guildId || "",
+      hasGuildName: Boolean(guildName),
+      hasCreatedByDisplayName: Boolean(createdByDisplayName),
+    });
+
     const response = await axios.post(`${CONVEX_URL}/createDraft`, {
       guildId: interaction.guildId,
+      guildName,
       channelId: voiceChannel.id,
       textChannelId: interaction.channelId,
       createdBy: interaction.user.id,
+      createdByDisplayName,
       players,
     }, BOT_HEADERS);
+
+    console.log("[draft.execute] createDraft response", {
+      status: response?.status || null,
+      success: true,
+    });
 
     const { shortId, playerTokens } = response.data;
     const draftUrl = `${APP_URL}/draft/${shortId}`;
@@ -129,6 +234,10 @@ async function execute(interaction) {
 
     watchDraft(interaction.client, shortId);
   } catch (error) {
+    console.log("[draft.execute] createDraft response", {
+      status: error?.response?.status || null,
+      success: false,
+    });
     console.error("Error creating draft:", error?.response?.data || error);
     await interaction.editReply({
       content: "Failed to create draft. Please try again.",
@@ -136,4 +245,12 @@ async function execute(interaction) {
   }
 }
 
-module.exports = { data, execute };
+module.exports = {
+  data,
+  execute,
+  __testables: {
+    resolveGuildName,
+    resolveCreatedByDisplayName,
+    toNonEmptyString,
+  },
+};

@@ -5,7 +5,7 @@
   "description": "discord bot for divoxutils",
   "main": "src/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
     "start": "node src/index.js"
   },
   "repository": {
@@ -22,5 +22,8 @@
     "axios": "^1.8.2",
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0"
   }
 }

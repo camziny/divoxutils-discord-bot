@@ -267,11 +267,25 @@ describe("draftWatcher transition and settings helpers", () => {
     expect(__testables.canAttemptMovePhase(updated, "teams", 10_000)).toBe(true);
     expect(__testables.resolvePhaseCooldownMs({ terminalConfigError: true })).toBe(60_000);
     expect(__testables.resolvePhaseCooldownMs({ retryableFailures: 1 })).toBe(10_000);
+    expect(__testables.resolvePhaseCooldownMs({ executed: false, retryableError: false })).toBe(60_000);
   });
 
   test("fetchGuildSettings falls back to guildId endpoint", async () => {
     axios.get
       .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({ data: { team1ChannelId: "a", team2ChannelId: "b" } });
+
+    const result = await __testables.fetchGuildSettings("guild-1");
+
+    expect(result).toEqual({ team1ChannelId: "a", team2ChannelId: "b" });
+    expect(axios.get).toHaveBeenCalledTimes(2);
+    expect(axios.get.mock.calls[0][0]).toContain("discordGuildId=guild-1");
+    expect(axios.get.mock.calls[1][0]).toContain("guildId=guild-1");
+  });
+
+  test("fetchGuildSettings falls back to guildId endpoint on 400", async () => {
+    axios.get
+      .mockRejectedValueOnce({ response: { status: 400 } })
       .mockResolvedValueOnce({ data: { team1ChannelId: "a", team2ChannelId: "b" } });
 
     const result = await __testables.fetchGuildSettings("guild-1");

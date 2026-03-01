@@ -9,6 +9,7 @@ const MOVE_CONCURRENCY = 5;
 const RETRY_DELAYS_MS = [250, 750];
 const PHASE_RETRY_COOLDOWN_MS = 10000;
 const CONFIG_RETRY_COOLDOWN_MS = 60000;
+const NON_RETRYABLE_ERROR_COOLDOWN_MS = 60000;
 const activePolls = new Set();
 const pollIntervals = new Map();
 const pollInFlight = new Set();
@@ -82,6 +83,9 @@ function resolvePhaseCooldownMs(operationResult) {
   if (operationResult.terminalConfigError) return CONFIG_RETRY_COOLDOWN_MS;
   if (operationResult.retryableFailures > 0 || operationResult.retryableError) {
     return PHASE_RETRY_COOLDOWN_MS;
+  }
+  if (operationResult.executed === false || operationResult.retryableFailures === 0) {
+    return NON_RETRYABLE_ERROR_COOLDOWN_MS;
   }
   return null;
 }
@@ -185,7 +189,7 @@ async function fetchGuildSettings(guildId) {
     );
     return data;
   } catch (error) {
-    if (error?.response?.status !== 404) {
+    if (error?.response?.status !== 404 && error?.response?.status !== 400) {
       throw error;
     }
   }

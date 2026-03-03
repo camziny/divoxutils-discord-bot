@@ -510,4 +510,110 @@ describe("draftWatcher poll hardening", () => {
 
     __testables.stopWatchingDraft("short-lobby-backoff");
   });
+
+  test("terminal cancelled status stops polling quickly", async () => {
+    const client = {
+      guilds: { fetch: jest.fn() },
+      channels: { fetch: jest.fn() },
+      users: { fetch: jest.fn() },
+    };
+
+    axios.get.mockImplementation(async (url) => {
+      if (url.includes("/getDraftStatus?shortId=short-cancelled")) {
+        return {
+          data: {
+            shortId: "short-cancelled",
+            status: "cancelled",
+          },
+        };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    watchDraft(client, "short-cancelled");
+    await jest.advanceTimersByTimeAsync(2200);
+    expect(
+      axios.get.mock.calls.filter(([url]) => url.includes("/getDraftStatus?shortId=short-cancelled"))
+        .length
+    ).toBe(1);
+
+    await jest.advanceTimersByTimeAsync(6000);
+    expect(
+      axios.get.mock.calls.filter(([url]) => url.includes("/getDraftStatus?shortId=short-cancelled"))
+        .length
+    ).toBe(1);
+  });
+
+  test("404 not found from getDraftStatus stops polling", async () => {
+    const client = {
+      guilds: { fetch: jest.fn() },
+      channels: { fetch: jest.fn() },
+      users: { fetch: jest.fn() },
+    };
+
+    axios.get.mockImplementation(async (url) => {
+      if (url.includes("/getDraftStatus?shortId=short-missing")) {
+        const error = new Error("not found");
+        error.response = { status: 404 };
+        throw error;
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    watchDraft(client, "short-missing");
+    await jest.advanceTimersByTimeAsync(2200);
+    expect(
+      axios.get.mock.calls.filter(([url]) => url.includes("/getDraftStatus?shortId=short-missing"))
+        .length
+    ).toBe(1);
+
+    await jest.advanceTimersByTimeAsync(6000);
+    expect(
+      axios.get.mock.calls.filter(([url]) => url.includes("/getDraftStatus?shortId=short-missing"))
+        .length
+    ).toBe(1);
+  });
+
+  test("public draft link is not reposted when markBotPostedLink fails", async () => {
+    const send = jest.fn().mockResolvedValue(undefined);
+    const client = {
+      guilds: { fetch: jest.fn() },
+      channels: {
+        fetch: jest.fn(async () => ({
+          send,
+        })),
+      },
+      users: { fetch: jest.fn() },
+    };
+
+    axios.get.mockImplementation(async (url) => {
+      if (url.includes("/getDraftStatus?shortId=short-mark-fail")) {
+        return {
+          data: {
+            shortId: "short-mark-fail",
+            status: "complete",
+            botPostedLink: false,
+            botNotifiedCaptains: true,
+            discordTextChannelId: "channel-1",
+            gameStarted: false,
+            winnerTeam: null,
+          },
+        };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    axios.post.mockImplementation(async (url) => {
+      if (url.includes("/markBotPostedLink")) {
+        throw new Error("mark failed");
+      }
+      return { data: {} };
+    });
+
+    watchDraft(client, "short-mark-fail");
+    await jest.advanceTimersByTimeAsync(6500);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    __testables.stopWatchingDraft("short-mark-fail");
+  });
 });

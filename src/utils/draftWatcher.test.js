@@ -75,6 +75,7 @@ describe("draftWatcher move operations", () => {
     expect(summary.retryableFailures).toBe(0);
     expect(summary.alreadyInPlace).toBe(0);
     expect(summary.retriesTotal).toBe(2);
+    expect(summary.concurrencyUsed).toBe(5);
     expect(maxInFlight).toBeLessThanOrEqual(5);
   });
 
@@ -176,6 +177,35 @@ describe("draftWatcher move operations", () => {
     expect(summary.failed).toBe(1);
     expect(summary.retryableFailures).toBe(1);
   });
+
+  test("runMoveOperation uses cached guild members when available", async () => {
+    const cachedMember = {
+      voice: {
+        channelId: "source",
+        setChannel: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const fetch = jest.fn(async () => {
+      throw new Error("should not fetch when member exists in cache");
+    });
+    const guild = {
+      members: {
+        cache: new Map([["cached-user", cachedMember]]),
+        fetch,
+      },
+    };
+
+    const summary = await __testables.runMoveOperation({
+      guild,
+      tasks: [{ userId: "cached-user", targetChannelId: "target" }],
+      draftShortId: "short-cache",
+      phase: "teams",
+      retryDelaysMs: [1, 1],
+    });
+
+    expect(summary.moved).toBe(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("draftWatcher transition and settings helpers", () => {
@@ -266,8 +296,36 @@ describe("draftWatcher transition and settings helpers", () => {
     expect(__testables.canAttemptMovePhase(updated, "teams", 9_999)).toBe(false);
     expect(__testables.canAttemptMovePhase(updated, "teams", 10_000)).toBe(true);
     expect(__testables.resolvePhaseCooldownMs({ terminalConfigError: true })).toBe(60_000);
-    expect(__testables.resolvePhaseCooldownMs({ retryableFailures: 1 })).toBe(10_000);
+    expect(__testables.resolvePhaseCooldownMs({ retryableFailures: 1 })).toBe(2_000);
     expect(__testables.resolvePhaseCooldownMs({ executed: false, retryableError: false })).toBe(60_000);
+  });
+
+  test("resolveRetryDelayMs prefers rate-limit retry_after values", () => {
+    const shortDelay = __testables.resolveRetryDelayMs(
+      { status: 429, rawError: { retry_after: 0.8 } },
+      0,
+      [300, 800, 1500]
+    );
+    const longDelay = __testables.resolveRetryDelayMs(
+      { status: 429, rawError: { retry_after: 25_000 } },
+      1,
+      [300, 800, 1500]
+    );
+
+    expect(shortDelay).toBe(800);
+    expect(longDelay).toBe(3000);
+  });
+
+  test("toRetryAfterMs treats larger retry_after as seconds when needed", () => {
+    expect(__testables.toRetryAfterMs({ rawError: { retry_after: 45 } })).toBe(45_000);
+    expect(__testables.toRetryAfterMs({ rawError: { retry_after: 1200 } })).toBe(1200);
+  });
+
+  test("resolveMoveConcurrency scales for larger rosters", () => {
+    expect(__testables.resolveMoveConcurrency(2)).toBe(2);
+    expect(__testables.resolveMoveConcurrency(8)).toBe(6);
+    expect(__testables.resolveMoveConcurrency(16)).toBe(8);
+    expect(__testables.resolveMoveConcurrency(16, 12)).toBe(10);
   });
 
   test("fetchGuildSettings falls back to guildId endpoint", async () => {
@@ -312,7 +370,7 @@ describe("draftWatcher poll hardening", () => {
     jest.useRealTimers();
   });
 
-  test("retryable failures back off phase retries instead of retrying every poll", async () => {
+  test("retryable failures re-attempt before a full 10s stall", async () => {
     const setChannel = jest.fn(async () => {
       const error = new Error("temporary");
       error.status = 503;
@@ -368,15 +426,88 @@ describe("draftWatcher poll hardening", () => {
     });
 
     watchDraft(client, "short-backoff");
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(setChannel).toHaveBeenCalledTimes(4);
+
     await jest.advanceTimersByTimeAsync(3500);
-    expect(setChannel).toHaveBeenCalledTimes(3);
-
-    await jest.advanceTimersByTimeAsync(8000);
-    expect(setChannel).toHaveBeenCalledTimes(3);
-
-    await jest.advanceTimersByTimeAsync(3000);
-    expect(setChannel).toHaveBeenCalledTimes(6);
+    expect(setChannel.mock.calls.length).toBeGreaterThan(4);
 
     __testables.stopWatchingDraft("short-backoff");
+  });
+
+  test("lobby retries also re-attempt quickly for winner-triggered return", async () => {
+    const setChannel = jest.fn(async () => {
+      const error = new Error("temporary");
+      error.status = 503;
+      throw error;
+    });
+
+    const client = {
+      guilds: {
+        fetch: jest.fn(async () => ({
+          members: {
+            cache: new Map([
+              [
+                "user-1",
+                {
+                  voice: {
+                    channelId: "team-1",
+                    setChannel,
+                  },
+                },
+              ],
+            ]),
+            fetch: jest.fn(async () => ({
+              voice: {
+                channelId: "team-1",
+                setChannel,
+              },
+            })),
+          },
+        })),
+      },
+      channels: {
+        fetch: jest.fn(),
+      },
+      users: {
+        fetch: jest.fn(),
+      },
+    };
+
+    axios.get.mockImplementation(async (url) => {
+      if (url.includes("/getDraftStatus?shortId=short-lobby-backoff")) {
+        return {
+          data: {
+            shortId: "short-lobby-backoff",
+            status: "complete",
+            gameStarted: true,
+            winnerTeam: 1,
+            discordGuildId: "guild-1",
+            players: [{ discordUserId: "user-1", team: 1 }],
+          },
+        };
+      }
+
+      if (url.includes("/guildSettings?discordGuildId=guild-1")) {
+        return {
+          data: {
+            team1ChannelId: "team-1",
+            team2ChannelId: "team-2",
+            lobbyChannelId: "lobby",
+          },
+        };
+      }
+
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    watchDraft(client, "short-lobby-backoff");
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(setChannel).toHaveBeenCalledTimes(4);
+
+    await jest.advanceTimersByTimeAsync(3500);
+    expect(setChannel.mock.calls.length).toBeGreaterThan(4);
+
+    __testables.stopWatchingDraft("short-lobby-backoff");
   });
 });

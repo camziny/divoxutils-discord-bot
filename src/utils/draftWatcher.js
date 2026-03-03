@@ -5,9 +5,10 @@ const CONVEX_URL = process.env.CONVEX_URL;
 const APP_URL = process.env.APP_URL || "https://divoxutils.com";
 const BOT_HEADERS = { headers: { "x-bot-api-key": process.env.BOT_API_KEY } };
 const POLL_INTERVAL_MS = 2000;
-const MOVE_CONCURRENCY = 5;
-const RETRY_DELAYS_MS = [250, 750];
-const PHASE_RETRY_COOLDOWN_MS = 10000;
+const MOVE_CONCURRENCY = 8;
+const MAX_MOVE_CONCURRENCY = 10;
+const RETRY_DELAYS_MS = [300, 800, 1500];
+const PHASE_RETRY_COOLDOWN_MS = POLL_INTERVAL_MS;
 const CONFIG_RETRY_COOLDOWN_MS = 60000;
 const NON_RETRYABLE_ERROR_COOLDOWN_MS = 60000;
 const activePolls = new Set();
@@ -146,6 +147,35 @@ function sleep(ms) {
   });
 }
 
+function toRetryAfterMs(error) {
+  const retryAfter =
+    error?.retry_after ??
+    error?.rawError?.retry_after ??
+    error?.data?.retry_after ??
+    error?.response?.data?.retry_after;
+
+  if (typeof retryAfter !== "number" || Number.isNaN(retryAfter) || retryAfter <= 0) {
+    return null;
+  }
+
+  if (retryAfter < 100) {
+    return Math.ceil(retryAfter * 1000);
+  }
+
+  return Math.ceil(retryAfter);
+}
+
+function resolveRetryDelayMs(error, attempt, retryDelaysMs) {
+  const rateLimitDelayMs = toRetryAfterMs(error);
+  if (rateLimitDelayMs !== null) {
+    return Math.min(3000, Math.max(250, rateLimitDelayMs));
+  }
+
+  const baseDelay =
+    retryDelaysMs[Math.min(attempt, Math.max(0, retryDelaysMs.length - 1))] ?? 750;
+  return Math.min(3000, baseDelay);
+}
+
 async function runWithConcurrency(items, limit, worker) {
   if (!items.length) return;
 
@@ -160,6 +190,32 @@ async function runWithConcurrency(items, limit, worker) {
   });
 
   await Promise.all(workers);
+}
+
+function normalizeMoveTasks(tasks) {
+  const uniqueTaskByUserId = new Map();
+  for (const task of tasks || []) {
+    if (!task?.userId) continue;
+    uniqueTaskByUserId.set(task.userId, task);
+  }
+  return Array.from(uniqueTaskByUserId.values());
+}
+
+function resolveMoveConcurrency(taskCount, requestedConcurrency = null) {
+  if (typeof requestedConcurrency === "number" && requestedConcurrency > 0) {
+    return Math.min(MAX_MOVE_CONCURRENCY, requestedConcurrency);
+  }
+
+  if (!taskCount || taskCount <= 0) return 1;
+  if (taskCount <= 4) return Math.min(4, taskCount);
+  if (taskCount <= 8) return Math.min(6, taskCount);
+  return Math.min(MAX_MOVE_CONCURRENCY, MOVE_CONCURRENCY);
+}
+
+async function resolveGuildMember(guild, userId) {
+  const cachedMember = guild?.members?.cache?.get?.(userId);
+  if (cachedMember) return cachedMember;
+  return guild.members.fetch(userId);
 }
 
 function buildTeamMoveTasks(players, settings) {
@@ -211,9 +267,11 @@ async function runMoveOperation({
   draftShortId,
   phase,
   allowedSourceChannelIds = null,
-  maxConcurrency = MOVE_CONCURRENCY,
+  maxConcurrency = null,
   retryDelaysMs = RETRY_DELAYS_MS,
 }) {
+  const normalizedTasks = normalizeMoveTasks(tasks);
+  const concurrency = resolveMoveConcurrency(normalizedTasks.length, maxConcurrency);
   const startedAt = Date.now();
   const summary = {
     attempted: 0,
@@ -221,16 +279,18 @@ async function runMoveOperation({
     alreadyInPlace: 0,
     failed: 0,
     retryableFailures: 0,
+    rateLimitFailures: 0,
     durationMs: 0,
     retriesTotal: 0,
+    concurrencyUsed: concurrency,
   };
   const failedMembers = [];
   const allowedSources = allowedSourceChannelIds ? new Set(allowedSourceChannelIds) : null;
 
-  await runWithConcurrency(tasks, maxConcurrency, async (task) => {
+  await runWithConcurrency(normalizedTasks, concurrency, async (task) => {
     let member;
     try {
-      member = await guild.members.fetch(task.userId);
+      member = await resolveGuildMember(guild, task.userId);
     } catch (error) {
       const retryable = isTransientMoveError(error);
       summary.failed += 1;
@@ -268,13 +328,16 @@ async function runMoveOperation({
 
         if (shouldRetry) {
           retriesForMember += 1;
-          await sleep(retryDelaysMs[attempt]);
+          await sleep(resolveRetryDelayMs(error, attempt, retryDelaysMs));
           continue;
         }
 
         summary.failed += 1;
         if (isTransientMoveError(error)) {
           summary.retryableFailures += 1;
+        }
+        if ((error?.response?.status ?? error?.status ?? null) === 429) {
+          summary.rateLimitFailures += 1;
         }
         summary.retriesTotal += retriesForMember;
         failedMembers.push({
@@ -301,6 +364,8 @@ async function runMoveOperation({
   console.log("[metric] draft_voice_move_members_attempted", summary.attempted);
   console.log("[metric] draft_voice_move_members_failed", summary.failed);
   console.log("[metric] draft_voice_move_retries_total", summary.retriesTotal);
+  console.log("[metric] draft_voice_move_concurrency_used", summary.concurrencyUsed);
+  console.log("[metric] draft_voice_move_rate_limit_failures", summary.rateLimitFailures);
 
   if (failedMembers.length > 0) {
     console.error(`[draft_voice_move] ${phase} failed_members`, {
@@ -566,6 +631,11 @@ module.exports = {
     resetWatcherInternals,
     stopWatchingDraft,
     isTransientMoveError,
+    resolveRetryDelayMs,
+    toRetryAfterMs,
+    resolveMoveConcurrency,
+    normalizeMoveTasks,
+    resolveGuildMember,
     fetchGuildSettings,
   },
 };

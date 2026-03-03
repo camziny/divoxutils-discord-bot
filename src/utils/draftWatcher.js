@@ -5,6 +5,9 @@ const CONVEX_URL = process.env.CONVEX_URL;
 const APP_URL = process.env.APP_URL || "https://divoxutils.com";
 const BOT_HEADERS = { headers: { "x-bot-api-key": process.env.BOT_API_KEY } };
 const POLL_INTERVAL_MS = 2000;
+const MAX_WATCH_LIFETIME_MS = Number(process.env.DRAFT_WATCH_MAX_LIFETIME_MS || 21600000);
+const MAX_POLL_ERROR_DELAY_MS = Number(process.env.DRAFT_WATCH_MAX_ERROR_BACKOFF_MS || 30000);
+const POLL_ERROR_JITTER_MS = Number(process.env.DRAFT_WATCH_ERROR_JITTER_MS || 400);
 const MOVE_CONCURRENCY = 8;
 const MAX_MOVE_CONCURRENCY = 10;
 const RETRY_DELAYS_MS = [300, 800, 1500];
@@ -18,12 +21,17 @@ const draftStateCache = new Map();
 
 function createInitialDraftState() {
   return {
+    watchStartedAt: Date.now(),
     lastStatus: null,
     lastGameStarted: null,
     lastWinnerTeam: null,
     lastMovePhase: "none",
     nextTeamMoveAttemptAt: null,
     nextLobbyMoveAttemptAt: null,
+    consecutivePollErrors: 0,
+    nextPollAt: 0,
+    localBotPostedLink: false,
+    localBotNotifiedCaptains: false,
   };
 }
 
@@ -89,6 +97,24 @@ function resolvePhaseCooldownMs(operationResult) {
     return NON_RETRYABLE_ERROR_COOLDOWN_MS;
   }
   return null;
+}
+
+function normalizeStatus(status) {
+  if (typeof status !== "string") return "";
+  return status.trim().toLowerCase();
+}
+
+function isTerminalStatus(status) {
+  const normalized = normalizeStatus(status);
+  return (
+    normalized === "cancelled" ||
+    normalized === "canceled" ||
+    normalized === "aborted" ||
+    normalized === "expired" ||
+    normalized === "closed" ||
+    normalized === "failed" ||
+    normalized === "archived"
+  );
 }
 
 function stopWatchingDraft(shortId) {
@@ -387,19 +413,66 @@ function watchDraft(client, shortId) {
     pollInFlight.add(shortId);
 
     try {
+      const stateBeforePoll = getDraftState(shortId);
+      const nowMs = Date.now();
+
+      if (nowMs - stateBeforePoll.watchStartedAt >= MAX_WATCH_LIFETIME_MS) {
+        stopWatchingDraft(shortId);
+        return;
+      }
+
+      if (stateBeforePoll.nextPollAt && nowMs < stateBeforePoll.nextPollAt) {
+        return;
+      }
+
       const { data } = await axios.get(
         `${CONVEX_URL}/getDraftStatus?shortId=${shortId}`,
         BOT_HEADERS
       );
 
-      if (data.status !== "setup" && !data.botPostedLink && data.discordTextChannelId) {
-        await postPublicLink(client, shortId, data.discordTextChannelId);
-        await axios.post(`${CONVEX_URL}/markBotPostedLink`, { shortId }, BOT_HEADERS);
+      if (isTerminalStatus(data.status)) {
+        stopWatchingDraft(shortId);
+        return;
+      }
+
+      const currentState = getDraftState(shortId);
+      let nextMovePhase = currentState.lastMovePhase;
+      let nextState = {
+        ...currentState,
+        consecutivePollErrors: 0,
+        nextPollAt: 0,
+      };
+      const loopNowMs = Date.now();
+
+      if (
+        data.status !== "setup" &&
+        !isTerminalStatus(data.status) &&
+        !data.botPostedLink &&
+        !nextState.localBotPostedLink &&
+        data.discordTextChannelId
+      ) {
+        const posted = await postPublicLink(client, shortId, data.discordTextChannelId);
+        if (posted) {
+          nextState = {
+            ...nextState,
+            localBotPostedLink: true,
+          };
+          draftStateCache.set(shortId, {
+            ...getDraftState(shortId),
+            localBotPostedLink: true,
+          });
+          try {
+            await axios.post(`${CONVEX_URL}/markBotPostedLink`, { shortId }, BOT_HEADERS);
+          } catch (error) {
+            console.error(`Error marking bot posted link for ${shortId}:`, error.message);
+          }
+        }
       }
 
       if (
         data.status !== "setup" &&
         !data.botNotifiedCaptains &&
+        !nextState.localBotNotifiedCaptains &&
         data.team1CaptainId &&
         data.team2CaptainId
       ) {
@@ -408,15 +481,25 @@ function watchDraft(client, shortId) {
           BOT_HEADERS
         );
         await dmCaptains(client, shortId, data, tokens);
-        await axios.post(`${CONVEX_URL}/markBotNotifiedCaptains`, { shortId }, BOT_HEADERS);
+        nextState = {
+          ...nextState,
+          localBotNotifiedCaptains: true,
+        };
+        draftStateCache.set(shortId, {
+          ...getDraftState(shortId),
+          localBotNotifiedCaptains: true,
+        });
+        try {
+          await axios.post(`${CONVEX_URL}/markBotNotifiedCaptains`, { shortId }, BOT_HEADERS);
+        } catch (error) {
+          console.error(`Error marking bot notified captains for ${shortId}:`, error.message);
+        }
       }
 
-      const currentState = getDraftState(shortId);
-      let nextMovePhase = currentState.lastMovePhase;
-      let nextState = { ...currentState };
-      const nowMs = Date.now();
-
-      if (shouldTriggerTeamMove(currentState, data) && canAttemptMovePhase(currentState, "teams", nowMs)) {
+      if (
+        shouldTriggerTeamMove(currentState, data) &&
+        canAttemptMovePhase(currentState, "teams", loopNowMs)
+      ) {
         const teamMoveResult = await movePlayersToTeamChannels(client, shortId, data);
         if (teamMoveResult.completed) {
           nextMovePhase = "moved_to_teams";
@@ -424,12 +507,15 @@ function watchDraft(client, shortId) {
         } else {
           const cooldownMs = resolvePhaseCooldownMs(teamMoveResult);
           if (cooldownMs !== null) {
-            nextState = setNextAttemptAt(nextState, "teams", nowMs + cooldownMs);
+            nextState = setNextAttemptAt(nextState, "teams", loopNowMs + cooldownMs);
           }
         }
       }
 
-      if (shouldTriggerLobbyMove(currentState, data) && canAttemptMovePhase(currentState, "lobby", nowMs)) {
+      if (
+        shouldTriggerLobbyMove(currentState, data) &&
+        canAttemptMovePhase(currentState, "lobby", loopNowMs)
+      ) {
         const lobbyMoveResult = await movePlayersToLobby(client, shortId, data);
         if (lobbyMoveResult.completed) {
           nextMovePhase = "moved_to_lobby";
@@ -439,7 +525,7 @@ function watchDraft(client, shortId) {
         } else {
           const cooldownMs = resolvePhaseCooldownMs(lobbyMoveResult);
           if (cooldownMs !== null) {
-            nextState = setNextAttemptAt(nextState, "lobby", nowMs + cooldownMs);
+            nextState = setNextAttemptAt(nextState, "lobby", loopNowMs + cooldownMs);
           }
         }
       }
@@ -449,8 +535,31 @@ function watchDraft(client, shortId) {
         ...draftStateCache.get(shortId),
         nextTeamMoveAttemptAt: nextState.nextTeamMoveAttemptAt,
         nextLobbyMoveAttemptAt: nextState.nextLobbyMoveAttemptAt,
+        watchStartedAt: nextState.watchStartedAt,
+        consecutivePollErrors: nextState.consecutivePollErrors,
+        nextPollAt: nextState.nextPollAt,
+        localBotPostedLink: nextState.localBotPostedLink,
+        localBotNotifiedCaptains: nextState.localBotNotifiedCaptains,
       });
     } catch (error) {
+      if (error?.response?.status === 404) {
+        stopWatchingDraft(shortId);
+        return;
+      }
+
+      const currentState = getDraftState(shortId);
+      const nextErrorCount = (currentState.consecutivePollErrors || 0) + 1;
+      const exponentialDelay = Math.min(
+        MAX_POLL_ERROR_DELAY_MS,
+        POLL_INTERVAL_MS * 2 ** Math.min(5, nextErrorCount)
+      );
+      const jitterMs = Math.floor(Math.random() * Math.max(0, POLL_ERROR_JITTER_MS));
+
+      draftStateCache.set(shortId, {
+        ...currentState,
+        consecutivePollErrors: nextErrorCount,
+        nextPollAt: Date.now() + exponentialDelay + jitterMs,
+      });
       console.error(`Error polling draft ${shortId}:`, error.message);
     } finally {
       pollInFlight.delete(shortId);
@@ -476,7 +585,7 @@ async function rehydrate(client) {
 async function postPublicLink(client, shortId, textChannelId) {
   try {
     const channel = await client.channels.fetch(textChannelId);
-    if (!channel) return;
+    if (!channel) return false;
 
     const draftUrl = `${APP_URL}/draft/${shortId}`;
 
@@ -486,8 +595,10 @@ async function postPublicLink(client, shortId, textChannelId) {
       .setDescription(`Watch the draft:\n${draftUrl}`);
 
     await channel.send({ embeds: [embed] });
+    return true;
   } catch (error) {
     console.error(`Error posting public link for ${shortId}:`, error.message);
+    return false;
   }
 }
 

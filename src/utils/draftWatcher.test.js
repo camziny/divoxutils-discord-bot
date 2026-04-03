@@ -185,8 +185,11 @@ describe("draftWatcher move operations", () => {
         setChannel: jest.fn().mockResolvedValue(undefined),
       },
     };
-    const fetch = jest.fn(async () => {
-      throw new Error("should not fetch when member exists in cache");
+    const fetch = jest.fn(async (arg) => {
+      if (typeof arg === "string") {
+        throw new Error("should not fetch individual member when member exists in cache");
+      }
+      return undefined;
     });
     const guild = {
       members: {
@@ -204,7 +207,7 @@ describe("draftWatcher move operations", () => {
     });
 
     expect(summary.moved).toBe(1);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith({ user: ["cached-user"] });
   });
 });
 
@@ -287,6 +290,38 @@ describe("draftWatcher transition and settings helpers", () => {
         }
       )
     ).toBe(false);
+
+    expect(
+      __testables.shouldTriggerCancelledLobbyMove(
+        {
+          lastStatus: "cancelled",
+          lastGameStarted: true,
+          lastWinnerTeam: null,
+          lastMovePhase: "moved_to_teams",
+        },
+        {
+          status: "cancelled",
+          gameStarted: true,
+          winnerTeam: null,
+        }
+      )
+    ).toBe(true);
+
+    expect(
+      __testables.shouldTriggerCancelledLobbyMove(
+        {
+          lastStatus: "cancelled",
+          lastGameStarted: true,
+          lastWinnerTeam: null,
+          lastMovePhase: "moved_to_lobby",
+        },
+        {
+          status: "cancelled",
+          gameStarted: true,
+          winnerTeam: null,
+        }
+      )
+    ).toBe(false);
   });
 
   test("phase cooldown helpers gate repeated attempts", () => {
@@ -323,9 +358,25 @@ describe("draftWatcher transition and settings helpers", () => {
 
   test("resolveMoveConcurrency scales for larger rosters", () => {
     expect(__testables.resolveMoveConcurrency(2)).toBe(2);
-    expect(__testables.resolveMoveConcurrency(8)).toBe(6);
-    expect(__testables.resolveMoveConcurrency(16)).toBe(8);
-    expect(__testables.resolveMoveConcurrency(16, 12)).toBe(10);
+    expect(__testables.resolveMoveConcurrency(8)).toBe(8);
+    expect(__testables.resolveMoveConcurrency(16)).toBe(16);
+    expect(__testables.resolveMoveConcurrency(16, 12)).toBe(12);
+  });
+
+  test("prefetchGuildMembers tolerates fetch failures", async () => {
+    const guild = {
+      members: {
+        fetch: jest.fn(async () => {
+          throw new Error("prefetch failed");
+        }),
+      },
+    };
+
+    await expect(
+      __testables.prefetchGuildMembers(guild, ["user-1", "user-2"])
+    ).resolves.toBeUndefined();
+
+    expect(guild.members.fetch).toHaveBeenCalledWith({ user: ["user-1", "user-2"] });
   });
 
   test("fetchGuildSettings falls back to guildId endpoint", async () => {
@@ -511,9 +562,32 @@ describe("draftWatcher poll hardening", () => {
     __testables.stopWatchingDraft("short-lobby-backoff");
   });
 
-  test("terminal cancelled status stops polling quickly", async () => {
+  test("cancelled status moves players to lobby and then stops polling", async () => {
+    const setChannel = jest.fn().mockResolvedValue(undefined);
     const client = {
-      guilds: { fetch: jest.fn() },
+      guilds: {
+        fetch: jest.fn(async () => ({
+          members: {
+            cache: new Map([
+              [
+                "user-1",
+                {
+                  voice: {
+                    channelId: "team-1",
+                    setChannel,
+                  },
+                },
+              ],
+            ]),
+            fetch: jest.fn(async () => ({
+              voice: {
+                channelId: "team-1",
+                setChannel,
+              },
+            })),
+          },
+        })),
+      },
       channels: { fetch: jest.fn() },
       users: { fetch: jest.fn() },
     };
@@ -524,6 +598,19 @@ describe("draftWatcher poll hardening", () => {
           data: {
             shortId: "short-cancelled",
             status: "cancelled",
+            gameStarted: true,
+            winnerTeam: null,
+            discordGuildId: "guild-1",
+            players: [{ discordUserId: "user-1", team: 1 }],
+          },
+        };
+      }
+      if (url.includes("/guildSettings?discordGuildId=guild-1")) {
+        return {
+          data: {
+            team1ChannelId: "team-1",
+            team2ChannelId: "team-2",
+            lobbyChannelId: "lobby",
           },
         };
       }
@@ -532,6 +619,7 @@ describe("draftWatcher poll hardening", () => {
 
     watchDraft(client, "short-cancelled");
     await jest.advanceTimersByTimeAsync(2200);
+    expect(setChannel).toHaveBeenCalledTimes(1);
     expect(
       axios.get.mock.calls.filter(([url]) => url.includes("/getDraftStatus?shortId=short-cancelled"))
         .length

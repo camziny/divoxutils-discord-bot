@@ -8,8 +8,7 @@ const POLL_INTERVAL_MS = 2000;
 const MAX_WATCH_LIFETIME_MS = Number(process.env.DRAFT_WATCH_MAX_LIFETIME_MS || 21600000);
 const MAX_POLL_ERROR_DELAY_MS = Number(process.env.DRAFT_WATCH_MAX_ERROR_BACKOFF_MS || 30000);
 const POLL_ERROR_JITTER_MS = Number(process.env.DRAFT_WATCH_ERROR_JITTER_MS || 400);
-const MOVE_CONCURRENCY = 8;
-const MAX_MOVE_CONCURRENCY = 10;
+const MAX_MOVE_CONCURRENCY = 16;
 const RETRY_DELAYS_MS = [300, 800, 1500];
 const PHASE_RETRY_COOLDOWN_MS = POLL_INTERVAL_MS;
 const CONFIG_RETRY_COOLDOWN_MS = 60000;
@@ -61,6 +60,10 @@ function shouldTriggerLobbyMove(prevState, data) {
   return winnerNowSet && prevState.lastMovePhase !== "moved_to_lobby";
 }
 
+function shouldTriggerCancelledLobbyMove(prevState, data) {
+  return isCancelledStatus(data.status) && prevState.lastMovePhase !== "moved_to_lobby";
+}
+
 function updateDraftState(shortId, data, movePhase) {
   const currentState = getDraftState(shortId);
   draftStateCache.set(shortId, {
@@ -104,11 +107,14 @@ function normalizeStatus(status) {
   return status.trim().toLowerCase();
 }
 
+function isCancelledStatus(status) {
+  const normalized = normalizeStatus(status);
+  return normalized === "cancelled" || normalized === "canceled";
+}
+
 function isTerminalStatus(status) {
   const normalized = normalizeStatus(status);
   return (
-    normalized === "cancelled" ||
-    normalized === "canceled" ||
     normalized === "aborted" ||
     normalized === "expired" ||
     normalized === "closed" ||
@@ -233,15 +239,21 @@ function resolveMoveConcurrency(taskCount, requestedConcurrency = null) {
   }
 
   if (!taskCount || taskCount <= 0) return 1;
-  if (taskCount <= 4) return Math.min(4, taskCount);
-  if (taskCount <= 8) return Math.min(6, taskCount);
-  return Math.min(MAX_MOVE_CONCURRENCY, MOVE_CONCURRENCY);
+  return Math.min(MAX_MOVE_CONCURRENCY, taskCount);
 }
 
 async function resolveGuildMember(guild, userId) {
   const cachedMember = guild?.members?.cache?.get?.(userId);
   if (cachedMember) return cachedMember;
   return guild.members.fetch(userId);
+}
+
+async function prefetchGuildMembers(guild, userIds) {
+  if (!guild?.members?.fetch || !Array.isArray(userIds) || userIds.length === 0) return;
+  try {
+    await guild.members.fetch({ user: userIds });
+  } catch {
+  }
 }
 
 function buildTeamMoveTasks(players, settings) {
@@ -297,6 +309,10 @@ async function runMoveOperation({
   retryDelaysMs = RETRY_DELAYS_MS,
 }) {
   const normalizedTasks = normalizeMoveTasks(tasks);
+  await prefetchGuildMembers(
+    guild,
+    normalizedTasks.map((task) => task.userId).filter(Boolean)
+  );
   const concurrency = resolveMoveConcurrency(normalizedTasks.length, maxConcurrency);
   const startedAt = Date.now();
   const summary = {
@@ -512,10 +528,11 @@ function watchDraft(client, shortId) {
         }
       }
 
-      if (
-        shouldTriggerLobbyMove(currentState, data) &&
-        canAttemptMovePhase(currentState, "lobby", loopNowMs)
-      ) {
+      const shouldMoveToLobby =
+        shouldTriggerLobbyMove(currentState, data) ||
+        shouldTriggerCancelledLobbyMove(currentState, data);
+
+      if (shouldMoveToLobby && canAttemptMovePhase(currentState, "lobby", loopNowMs)) {
         const lobbyMoveResult = await movePlayersToLobby(client, shortId, data);
         if (lobbyMoveResult.completed) {
           nextMovePhase = "moved_to_lobby";
@@ -734,6 +751,7 @@ module.exports = {
     runMoveOperation,
     shouldTriggerTeamMove,
     shouldTriggerLobbyMove,
+    shouldTriggerCancelledLobbyMove,
     createInitialDraftState,
     updateDraftState,
     canAttemptMovePhase,
@@ -747,6 +765,7 @@ module.exports = {
     resolveMoveConcurrency,
     normalizeMoveTasks,
     resolveGuildMember,
+    prefetchGuildMembers,
     fetchGuildSettings,
   },
 };

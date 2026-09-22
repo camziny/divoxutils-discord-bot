@@ -324,6 +324,44 @@ describe("draftWatcher transition and settings helpers", () => {
     ).toBe(false);
   });
 
+  test("shouldTriggerTeamMove never re-fires once the team-move phase has completed, regardless of roster changes", () => {
+    const completedState = {
+      lastStatus: "complete",
+      lastGameStarted: true,
+      lastWinnerTeam: null,
+      lastMovePhase: "moved_to_teams",
+    };
+    const data = {
+      status: "complete",
+      gameStarted: true,
+      winnerTeam: null,
+      players: [
+        { discordUserId: "p1", team: 1 },
+        { discordUserId: "p2", team: 2 },
+        { discordUserId: "p3", team: 1 },
+      ],
+    };
+
+    expect(__testables.shouldTriggerTeamMove(completedState, data)).toBe(false);
+  });
+
+  test("buildTeamMoveTasks interleaves team 1 and team 2 and excludes players with no team assigned", () => {
+    const players = [
+      { discordUserId: "t1-a", team: 1, displayName: "T1 A" },
+      { discordUserId: "t2-a", team: 2, displayName: "T2 A" },
+      { discordUserId: "t1-b", team: 1, displayName: "T1 B" },
+      { discordUserId: "pool-unpicked", displayName: "Unpicked" },
+      { discordUserId: "t2-b", team: 2, displayName: "T2 B" },
+    ];
+    const settings = { team1ChannelId: "team1-channel", team2ChannelId: "team2-channel" };
+
+    const tasks = __testables.buildTeamMoveTasks(players, settings);
+
+    expect(tasks.map((task) => task.userId)).toEqual(["t1-a", "t2-a", "t1-b", "t2-b"]);
+    expect(tasks.find((task) => task.userId === "t1-a").targetChannelId).toBe("team1-channel");
+    expect(tasks.find((task) => task.userId === "t2-a").targetChannelId).toBe("team2-channel");
+  });
+
   test("phase cooldown helpers gate repeated attempts", () => {
     const state = __testables.createInitialDraftState();
     const updated = __testables.setNextAttemptAt(state, "teams", 10_000);

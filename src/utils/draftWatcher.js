@@ -1,4 +1,4 @@
-const { EmbedBuilder } = require("discord.js");
+const { EmbedBuilder, RESTEvents } = require("discord.js");
 const axios = require("axios");
 
 const CONVEX_URL = process.env.CONVEX_URL;
@@ -13,10 +13,12 @@ const RETRY_DELAYS_MS = [300, 800, 1500];
 const PHASE_RETRY_COOLDOWN_MS = POLL_INTERVAL_MS;
 const CONFIG_RETRY_COOLDOWN_MS = 60000;
 const NON_RETRYABLE_ERROR_COOLDOWN_MS = 60000;
+const GUILD_SETTINGS_CACHE_TTL_MS = 5 * 60 * 1000;
 const activePolls = new Set();
 const pollIntervals = new Map();
 const pollInFlight = new Set();
 const draftStateCache = new Map();
+let restDiagnosticsAttached = false;
 
 function createInitialDraftState() {
   return {
@@ -31,7 +33,28 @@ function createInitialDraftState() {
     nextPollAt: 0,
     localBotPostedLink: false,
     localBotNotifiedCaptains: false,
+    localAnnouncedTeamMove: false,
+    localAnnouncedLobbyMove: false,
+    cachedGuildSettings: null,
+    guildSettingsWarmedAt: null,
+    guildSettingsWarmupInFlight: false,
   };
+}
+
+function attachRestDiagnostics(client) {
+  if (restDiagnosticsAttached || !client?.rest?.on) return;
+  restDiagnosticsAttached = true;
+
+  client.rest.on(RESTEvents.RateLimited, (rateLimitData) => {
+    console.log("[draft_voice_move] discord_rate_limited", {
+      route: rateLimitData.route,
+      majorParameter: rateLimitData.majorParameter,
+      method: rateLimitData.method,
+      global: rateLimitData.global,
+      limit: rateLimitData.limit,
+      timeToResetMs: rateLimitData.timeToReset,
+    });
+  });
 }
 
 function getDraftState(shortId) {
@@ -48,6 +71,11 @@ function isWinnerSet(value) {
 
 function isTeamMoveConditionMet(data) {
   return data.status === "complete" && data.gameStarted === true && !isWinnerSet(data.winnerTeam);
+}
+
+function isTeamAssignedPlayer(player) {
+  const team = Number(player.team);
+  return team === 1 || team === 2;
 }
 
 function shouldTriggerTeamMove(prevState, data) {
@@ -144,6 +172,7 @@ function resetWatcherInternals() {
   pollInFlight.clear();
   draftStateCache.clear();
   activePolls.clear();
+  restDiagnosticsAttached = false;
 }
 
 function toErrorCode(error) {
@@ -252,19 +281,34 @@ async function prefetchGuildMembers(guild, userIds) {
   if (!guild?.members?.fetch || !Array.isArray(userIds) || userIds.length === 0) return;
   try {
     await guild.members.fetch({ user: userIds });
-  } catch {
+  } catch (error) {
+    console.error("[draft_voice_move] prefetchGuildMembers failed", error.message);
   }
 }
 
 function buildTeamMoveTasks(players, settings) {
-  return (players || [])
-    .filter((player) => Number(player.team) === 1 || Number(player.team) === 2)
-    .map((player) => ({
-      userId: player.discordUserId,
-      displayName: player.displayName,
-      targetChannelId:
-        Number(player.team) === 1 ? settings.team1ChannelId : settings.team2ChannelId,
-    }));
+  const team1 = [];
+  const team2 = [];
+
+  for (const player of players || []) {
+    if (!isTeamAssignedPlayer(player)) continue;
+    if (Number(player.team) === 1) team1.push(player);
+    else team2.push(player);
+  }
+
+  const interleaved = [];
+  const maxLength = Math.max(team1.length, team2.length);
+  for (let i = 0; i < maxLength; i += 1) {
+    if (team1[i]) interleaved.push(team1[i]);
+    if (team2[i]) interleaved.push(team2[i]);
+  }
+
+  return interleaved.map((player) => ({
+    userId: player.discordUserId,
+    displayName: player.displayName,
+    targetChannelId:
+      Number(player.team) === 1 ? settings.team1ChannelId : settings.team2ChannelId,
+  }));
 }
 
 function buildLobbyMoveTasks(players, settings) {
@@ -299,6 +343,45 @@ async function fetchGuildSettings(guildId) {
   }
 }
 
+function isGuildSettingsCacheFresh(state) {
+  return (
+    state.guildSettingsWarmedAt !== null &&
+    Date.now() - state.guildSettingsWarmedAt < GUILD_SETTINGS_CACHE_TTL_MS
+  );
+}
+
+function warmGuildSettingsCache(shortId, guildId) {
+  const state = getDraftState(shortId);
+  if (!guildId || isGuildSettingsCacheFresh(state) || state.guildSettingsWarmupInFlight) return;
+
+  draftStateCache.set(shortId, { ...getDraftState(shortId), guildSettingsWarmupInFlight: true });
+
+  fetchGuildSettings(guildId)
+    .then((settings) => {
+      if (!draftStateCache.has(shortId)) return;
+      draftStateCache.set(shortId, {
+        ...getDraftState(shortId),
+        cachedGuildSettings: settings,
+        guildSettingsWarmedAt: Date.now(),
+        guildSettingsWarmupInFlight: false,
+      });
+    })
+    .catch((error) => {
+      console.error(`Error warming guild settings cache for ${shortId}:`, error.message);
+      if (!draftStateCache.has(shortId)) return;
+      draftStateCache.set(shortId, {
+        ...getDraftState(shortId),
+        guildSettingsWarmupInFlight: false,
+      });
+    });
+}
+
+async function getGuildSettingsForMove(shortId, guildId) {
+  const state = getDraftState(shortId);
+  if (isGuildSettingsCacheFresh(state)) return state.cachedGuildSettings;
+  return fetchGuildSettings(guildId);
+}
+
 async function runMoveOperation({
   guild,
   tasks,
@@ -309,7 +392,8 @@ async function runMoveOperation({
   retryDelaysMs = RETRY_DELAYS_MS,
 }) {
   const normalizedTasks = normalizeMoveTasks(tasks);
-  await prefetchGuildMembers(
+  const prefetchStartedAt = Date.now();
+  const prefetchPromise = prefetchGuildMembers(
     guild,
     normalizedTasks.map((task) => task.userId).filter(Boolean)
   );
@@ -393,6 +477,12 @@ async function runMoveOperation({
   });
 
   summary.durationMs = Date.now() - startedAt;
+  prefetchPromise.then(() => {
+    console.log(
+      "[metric] draft_voice_move_prefetch_duration_ms",
+      Date.now() - prefetchStartedAt
+    );
+  });
   const durationMetricName =
     phase === "teams"
       ? "draft_voice_move_team_duration_ms"
@@ -421,6 +511,7 @@ async function runMoveOperation({
 
 function watchDraft(client, shortId) {
   if (activePolls.has(shortId)) return;
+  attachRestDiagnostics(client);
   activePolls.add(shortId);
   getDraftState(shortId);
 
@@ -459,6 +550,8 @@ function watchDraft(client, shortId) {
         nextPollAt: 0,
       };
       const loopNowMs = Date.now();
+
+      warmGuildSettingsCache(shortId, data.discordGuildId || data.guildId);
 
       if (
         data.status !== "setup" &&
@@ -516,6 +609,17 @@ function watchDraft(client, shortId) {
         shouldTriggerTeamMove(currentState, data) &&
         canAttemptMovePhase(currentState, "teams", loopNowMs)
       ) {
+        if (!currentState.localAnnouncedTeamMove && data.discordTextChannelId) {
+          const announced = await postMoveStartedMessage(client, data.discordTextChannelId, "teams");
+          if (announced) {
+            nextState = { ...nextState, localAnnouncedTeamMove: true };
+            draftStateCache.set(shortId, {
+              ...getDraftState(shortId),
+              localAnnouncedTeamMove: true,
+            });
+          }
+        }
+
         const teamMoveResult = await movePlayersToTeamChannels(client, shortId, data);
         if (teamMoveResult.completed) {
           nextMovePhase = "moved_to_teams";
@@ -533,6 +637,17 @@ function watchDraft(client, shortId) {
         shouldTriggerCancelledLobbyMove(currentState, data);
 
       if (shouldMoveToLobby && canAttemptMovePhase(currentState, "lobby", loopNowMs)) {
+        if (!currentState.localAnnouncedLobbyMove && data.discordTextChannelId) {
+          const announced = await postMoveStartedMessage(client, data.discordTextChannelId, "lobby");
+          if (announced) {
+            nextState = { ...nextState, localAnnouncedLobbyMove: true };
+            draftStateCache.set(shortId, {
+              ...getDraftState(shortId),
+              localAnnouncedLobbyMove: true,
+            });
+          }
+        }
+
         const lobbyMoveResult = await movePlayersToLobby(client, shortId, data);
         if (lobbyMoveResult.completed) {
           nextMovePhase = "moved_to_lobby";
@@ -557,6 +672,8 @@ function watchDraft(client, shortId) {
         nextPollAt: nextState.nextPollAt,
         localBotPostedLink: nextState.localBotPostedLink,
         localBotNotifiedCaptains: nextState.localBotNotifiedCaptains,
+        localAnnouncedTeamMove: nextState.localAnnouncedTeamMove,
+        localAnnouncedLobbyMove: nextState.localAnnouncedLobbyMove,
       });
     } catch (error) {
       if (error?.response?.status === 404) {
@@ -619,6 +736,26 @@ async function postPublicLink(client, shortId, textChannelId) {
   }
 }
 
+async function postMoveStartedMessage(client, textChannelId, phase) {
+  try {
+    const channel = await client.channels.fetch(textChannelId);
+    if (!channel) return false;
+
+    const description =
+      phase === "teams"
+        ? "Moving players to team channels..."
+        : "Moving players back to the lobby...";
+
+    await channel.send({
+      embeds: [new EmbedBuilder().setColor("#6366f1").setDescription(description)],
+    });
+    return true;
+  } catch (error) {
+    console.error(`Error posting move-started message for phase ${phase}:`, error.message);
+    return false;
+  }
+}
+
 async function dmCaptains(client, shortId, draftData, tokens) {
   const draftUrl = `${APP_URL}/draft/${shortId}`;
   const captainIds = [draftData.team1CaptainId, draftData.team2CaptainId].filter(Boolean);
@@ -658,8 +795,10 @@ async function movePlayersToTeamChannels(client, shortId, draftData) {
     return { executed: false, completed: false, terminalConfigError: true };
   }
 
+  const prepStartedAt = Date.now();
+
   try {
-    const settings = await fetchGuildSettings(guildId);
+    const settings = await getGuildSettingsForMove(shortId, guildId);
 
     if (!settings || !settings.team1ChannelId || !settings.team2ChannelId) {
       console.log(
@@ -670,11 +809,19 @@ async function movePlayersToTeamChannels(client, shortId, draftData) {
 
     const guild = await client.guilds.fetch(guildId);
     const tasks = buildTeamMoveTasks(draftData.players, settings);
+    const prepMs = Date.now() - prepStartedAt;
     const summary = await runMoveOperation({
       guild,
       tasks,
       draftShortId: shortId,
       phase: "teams",
+      maxConcurrency: 4,
+    });
+    console.log("[draft_voice_move] teams timing", {
+      shortId,
+      prepMs,
+      moveMs: summary.durationMs,
+      totalMs: prepMs + summary.durationMs,
     });
 
     return {
@@ -701,8 +848,10 @@ async function movePlayersToLobby(client, shortId, draftData) {
     return { executed: false, completed: false, terminalConfigError: true };
   }
 
+  const prepStartedAt = Date.now();
+
   try {
-    const settings = await fetchGuildSettings(guildId);
+    const settings = await getGuildSettingsForMove(shortId, guildId);
 
     if (
       !settings ||
@@ -718,12 +867,20 @@ async function movePlayersToLobby(client, shortId, draftData) {
 
     const guild = await client.guilds.fetch(guildId);
     const tasks = buildLobbyMoveTasks(draftData.players, settings);
+    const prepMs = Date.now() - prepStartedAt;
     const summary = await runMoveOperation({
       guild,
       tasks,
       draftShortId: shortId,
       phase: "lobby",
       allowedSourceChannelIds: [settings.team1ChannelId, settings.team2ChannelId],
+      maxConcurrency: 4,
+    });
+    console.log("[draft_voice_move] lobby timing", {
+      shortId,
+      prepMs,
+      moveMs: summary.durationMs,
+      totalMs: prepMs + summary.durationMs,
     });
 
     return {
@@ -767,5 +924,7 @@ module.exports = {
     resolveGuildMember,
     prefetchGuildMembers,
     fetchGuildSettings,
+    attachRestDiagnostics,
+    postMoveStartedMessage,
   },
 };
